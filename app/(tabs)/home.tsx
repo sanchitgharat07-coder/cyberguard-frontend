@@ -37,6 +37,17 @@ const COLORS = {
 
 const API_URL = 'http://192.168.31.16:5000/predict'; 
 
+const isValidURL = (string: string) => {
+  // Regex to check for standard domain format (e.g., example.com, https://example.com)
+  const res = string.match(/(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)/g);
+  return (res !== null);
+};
+
+// Get Screen Dimensions
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// Define the "Active Zone" size (The square box in the middle)
+const SCAN_AREA_SIZE = 250;
+
 export default function HomeScreen() {
   const [manualUrl, setManualUrl] = useState('');
   const [permission, requestPermission] = useCameraPermissions();
@@ -105,10 +116,24 @@ export default function HomeScreen() {
 
   // --- SCAN LOGIC ---
   const handleCheck = async (urlToCheck: string, type: 'Manual' | 'QR Scan' = 'QR Scan') => {
+
+    const cleanedUrl = urlToCheck.trim(); // Remove accidental spaces
+
+    if (!cleanedUrl) {
+       Alert.alert("Empty Input", "Please enter a URL to scan.");
+       return;
+    }
+
+    if (!isValidURL(cleanedUrl)) {
+       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+       Alert.alert("Invalid URL", "That doesn't look like a valid website address.\n\nExample: google.com or https://example.com");
+       return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsScanning(false);
     setIsLoading(true);
-    setLoadingUrl(urlToCheck);
+    setLoadingUrl(cleanedUrl);
 
     try {
       const [_, response] = await Promise.all([
@@ -165,24 +190,59 @@ export default function HomeScreen() {
     }
   };
 
-  const handleBarCodeScanned = ({ data }: { data: string }) => {
-    if (!isLoading) {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        handleCheck(data, 'QR Scan');
-    }
-  };
+const handleBarCodeScanned = ({ data, bounds }: any) => {
+    if (isLoading || !isScanning) return;
 
-  if (!permission) return <View />;
-  if (!permission.granted) {
-    return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.text}>Camera access is required.</Text>
-        <TouchableOpacity style={styles.btn} onPress={requestPermission}>
-          <Text style={styles.btnText}>GRANT ACCESS</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+    // 1. SAFEGUARD: Check if bounds exist (some android devices might not send it)
+    if (!bounds) {
+       // Fallback: Just scan it if we can't verify position
+       handleCheck(data, 'QR Scan');
+       return;
+    }
+
+    // 2. GET QR COORDINATES
+    const { origin, size } = bounds;
+    const qrCenterX = origin.x + size.width / 2;
+    const qrCenterY = origin.y + size.height / 2;
+
+    // 3. DEFINE THE "PERFECT ZONE" (The center box)
+    // We calculate the boundaries of the middle square
+    const scanAreaX = (SCREEN_WIDTH - SCAN_AREA_SIZE) / 2;
+    const scanAreaY = (SCREEN_HEIGHT - SCAN_AREA_SIZE) / 2;
+
+    // 4. CHECK 1: IS IT CENTERED?
+    // The QR center must be inside our defined box
+    const isCentered = 
+       qrCenterX > scanAreaX && 
+       qrCenterX < (scanAreaX + SCAN_AREA_SIZE) &&
+       qrCenterY > scanAreaY && 
+       qrCenterY < (scanAreaY + SCAN_AREA_SIZE);
+
+    if (!isCentered) {
+      // Ignore this scan (It's off to the side, likely noise or a second QR)
+      return; 
+    }
+
+    // 5. CHECK 2: IS IT "CLEARLY VISIBLE" (BIG ENOUGH)?
+    // If the QR is tiny (far away), it might be distorted. 
+    // We enforce it must fill at least 40% of the scan frame width.
+    if (size.width < SCAN_AREA_SIZE * 0.4) {
+      // Ignore (Too small/far away)
+      return;
+    }
+
+    // 6. CHECK 3: NO DISTORTION (ASPECT RATIO)
+    // A clean QR code is roughly square. If width/height ratio is weird, it's tilted/distorted.
+    const aspectRatio = size.width / size.height;
+    if (aspectRatio < 0.8 || aspectRatio > 1.2) {
+       // Ignore (Too tilted or distorted)
+       return;
+    }
+
+    // --- IF WE PASS ALL CHECKS ---
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    handleCheck(data, 'QR Scan');
+  };
 
   return (
     <View style={styles.container}>
