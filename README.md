@@ -1,3 +1,7 @@
+# 📱 Deepfake QR Code Fraud Detector (v2 Stable)
+
+**Backend Repository:** [Click Here for Python/Flask Backend Code](LINK_TO_BACKEND_REPO)
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
