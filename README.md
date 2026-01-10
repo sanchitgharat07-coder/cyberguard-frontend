@@ -1,6 +1,6 @@
 # 📱 Deepfake QR Code Fraud Detector (v2 Stable)
 
-**Backend Repository:** [Click Here for Python/Flask Backend Code](LINK_TO_BACKEND_REPO)
+**Backend Repository:** [(https://github.com/sanchitgharat07-coder/cyberguard-backend)](LINK_TO_BACKEND_REPO)
 
 # Welcome to your Expo app 👋
 
