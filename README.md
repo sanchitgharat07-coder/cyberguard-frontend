@@ -1,6 +1,9 @@
 # 📱 Deepfake QR Code Fraud Detector (v2 Stable)
 
 **Backend Repository:** [(https://github.com/sanchitgharat07-coder/cyberguard-backend)](LINK_TO_BACKEND_REPO)
+# Other Team Member: -
+Sahil Devkar [(https://github.com/sahildevkar789)]
+
 
 # Welcome to your Expo app 👋
 
