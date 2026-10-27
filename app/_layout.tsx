@@ -32,16 +32,22 @@ function RootLayoutNav({ user, authLoaded }: { user: User | null; authLoaded: bo
   useEffect(() => {
     if (!authLoaded) return; // Wait for auth to be loaded
 
-    // --- THE FIX (Part 1) ---
-    // The segment for this route group IS the folder name
     const inTabsGroup = segments[0] === '(tabs)';
+    
+    // --- THE FIX: PUBLIC ROUTE DETECTION ---
+    // Check if the user is currently on the 'wifi' screen.
+    // segments might look like ['(tabs)', 'wifi']
+    const isWifiScreen = segments[1] === 'wifi'; 
 
     if (user && !inTabsGroup) {
-      // User is logged in, but not in the app. Go to home.
+      // 1. User is LOGGED IN, but in the auth screens (login/signup). 
+      // Redirect to dashboard.
       // @ts-ignore
       router.replace('/(tabs)/home');
-    } else if (!user && inTabsGroup) {
-      // User is logged out, but in the app. Go to login.
+      
+    } else if (!user && inTabsGroup && !isWifiScreen) {
+      // 2. User is LOGGED OUT, and trying to access a protected tab (home, profile, etc).
+      // EXCEPTION: If they are on 'wifi', DO NOT redirect them.
       router.replace('/login');
     }
     
@@ -63,9 +69,7 @@ function RootLayoutNav({ user, authLoaded }: { user: User | null; authLoaded: bo
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="signup" options={{ headerShown: false }} />
       
-      {/* --- THE FIX (Part 2) ---
-          The name MUST match the folder name on the file system.
-      */}
+      {/* The main app tabs */}
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
     </Stack>
     </>

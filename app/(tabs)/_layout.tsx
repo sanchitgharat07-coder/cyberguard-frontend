@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
-import { FontAwesome, MaterialIcons } from '@expo/vector-icons';
+import { FontAwesome, Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { View } from 'react-native';
 
 const COLORS = {
@@ -66,18 +66,9 @@ export default function TabLayout() {
       <Tabs.Screen
         name="scanner"
         options={{
-          title: 'Scanner',
-          headerShown: false, 
-          tabStyle: { display: 'none' }, // Optional: Hide tab bar while scanning
-          tabBarIcon: ({ color }) => (
-            <View style={{
-              backgroundColor: color === COLORS.accent ? 'rgba(0, 255, 157, 0.2)' : 'transparent',
-              padding: 8,
-              borderRadius: 20,
-            }}>
-              <MaterialIcons size={28} name="qr-code-scanner" color={color} />
-            </View>
-          ),
+          title: 'Scan',
+          tabBarIcon: ({ color }) => <Ionicons name="camera" size={30} color={color} />,
+          tabBarStyle: { display: 'none' } // Optional: Hide bottom bar while scanning
         }}
       />
 
@@ -112,6 +103,14 @@ export default function TabLayout() {
         options={{
           title: 'USER PROFILE',
           tabBarIcon: ({ color }) => <FontAwesome size={24} name="user-secret" color={color} />,
+        }}
+      />
+      {/* 3. WI-FI SENTINEL (HIDDEN BUT ACCESSIBLE) */}
+      <Tabs.Screen
+        name="wifi"
+        options={{
+          href: null, // <--- This hides the icon from the bottom bar
+          headerShown: false, // Hide default header
         }}
       />
       

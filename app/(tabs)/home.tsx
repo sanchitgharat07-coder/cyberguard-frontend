@@ -1,111 +1,109 @@
-import React, { useState, useCallback } from 'react';
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  StyleSheet, 
-  Alert, 
-  Modal, 
-  Platform,
+import React, { useState, useCallback, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
   StatusBar,
   ScrollView,
   RefreshControl,
-  Dimensions
+  Alert,
+  Modal,
+  Platform,
 } from 'react-native';
 import { Ionicons, FontAwesome5, MaterialIcons } from '@expo/vector-icons';
-import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-import axios from 'axios';
 import { auth, db } from '../../firebaseConfig';
-import { collection, addDoc, serverTimestamp, query, orderBy, getDocs, doc, getDoc } from 'firebase/firestore';
-import { useFocusEffect, router } from 'expo-router'; 
+import { collection, query, orderBy, getDocs, doc, getDoc } from 'firebase/firestore';
+import { useFocusEffect, useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 
-import { HackerLoader } from '../../components/HackerLoader';
-import { ResultModal, ForensicsData } from '../../components/ResultModal';
+import { HackerLoader }  from '../../components/HackerLoader';
+import { ResultModal }   from '../../components/ResultModal';
+import { useUrlScanner } from '../../hooks/useUrlScanner';
 
+// ── Theme ──────────────────────────────────────────────────────────────────────
 const COLORS = {
-  bg: '#121212',
-  card: '#1e1e1e',
-  text: '#ffffff',
+  bg:     '#0e0e0e',
+  card:   '#141414',
+  text:   '#ffffff',
   accent: '#00ff9d',
   danger: '#ff4b4b',
-  warning: '#f0ad4e',
-  muted: '#888888',
-  border: '#333333'
+  muted:  '#555555',
+  border: '#1e1e1e',
 };
 
-const API_URL = 'http://192.168.31.16:5000/predict'; 
+const isValidURL = (s: string) =>
+  /(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_+.~#?&//=]*)/g.test(s);
 
-const isValidURL = (string: string) => {
-  // Regex to check for standard domain format (e.g., example.com, https://example.com)
-  const res = string.match(/(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)/g);
-  return (res !== null);
+/**
+ * Robust timestamp → Date converter.
+ * Handles all 3 shapes Firestore can return:
+ *   1. SDK Timestamp object  — has .toDate()
+ *   2. Plain object          — { seconds, nanoseconds }
+ *   3. ISO string / number   — fallback
+ */
+const tsToDate = (ts: any): Date | null => {
+  if (!ts) return null;
+  if (typeof ts.toDate === 'function')  return ts.toDate();
+  if (typeof ts.seconds === 'number')   return new Date(ts.seconds * 1000);
+  if (typeof ts === 'number')           return new Date(ts);
+  if (typeof ts === 'string')           { const d = new Date(ts); return isNaN(d.getTime()) ? null : d; }
+  return null;
 };
 
-// Get Screen Dimensions
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-// Define the "Active Zone" size (The square box in the middle)
-const SCAN_AREA_SIZE = 250;
+const formatDate = (ts: any): string => {
+  const d = tsToDate(ts);
+  if (!d) return '—';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+};
 
+// ── Screen ─────────────────────────────────────────────────────────────────────
 export default function HomeScreen() {
-  const [manualUrl, setManualUrl] = useState('');
-  const [permission, requestPermission] = useCameraPermissions();
-  const [isScanning, setIsScanning] = useState(false);
-  const [facing, setFacing] = useState<CameraType>('back');
-  
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingUrl, setLoadingUrl] = useState('');
-  const [modalVisible, setModalVisible] = useState(false);
-  
-  const [scanResult, setScanResult] = useState<{
-    prediction: 'Safe' | 'Malicious' | 'Suspicious';
-    url: string;
-    source: string;
-    score?: number;
-    forensics?: ForensicsData;
-  } | null>(null);
-
-  const [stats, setStats] = useState({ safe: 0, threats: 0, total: 0 });
+  const [manualUrl,   setManualUrl]   = useState('');
+  const [stats,       setStats]       = useState({ safe: 0, threats: 0, total: 0 });
   const [recentScans, setRecentScans] = useState<any[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [username, setUsername] = useState('OPERATIVE'); 
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [username,    setUsername]    = useState('OPERATIVE');
 
-  // --- FETCH DASHBOARD ---
+  const router = useRouter();
+
+  const { loading, result, liveLogs, progress, modalVisible, scanUrl, closeReport } =
+    useUrlScanner();
+
+  // ── Dashboard fetch ────────────────────────────────────────────────────────
   const fetchDashboardData = async () => {
     if (!auth.currentUser) return;
     try {
-      const userDocRef = doc(db, 'users', auth.currentUser.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      if (userDocSnap.exists() && userDocSnap.data().username) {
-        setUsername(userDocSnap.data().username.toUpperCase());
-      }
+      const userSnap = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (userSnap.exists() && userSnap.data().username)
+        setUsername(userSnap.data().username.toUpperCase());
 
       const q = query(
         collection(db, 'users', auth.currentUser.uid, 'scans'),
-        orderBy('timestamp', 'desc')
+        orderBy('timestamp', 'desc')   // ← plain string, not a template expression
       );
-      
-      const snapshot = await getDocs(q);
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const snap = await getDocs(q);
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-      let safeCount = 0;
-      let threatCount = 0;
-      docs.forEach((scan: any) => {
-        if (scan.prediction === 'Safe') safeCount++;
-        else threatCount++;
+      let safe = 0, threats = 0;
+      docs.forEach((s: any) => {
+        if (s.prediction === 'SAFE') safe++;
+        else threats++;
       });
 
-      setStats({ safe: safeCount, threats: threatCount, total: docs.length });
+      setStats({ safe, threats, total: docs.length });
       setRecentScans(docs.slice(0, 3));
-    } catch (error) {
-      console.log("Error fetching dashboard:", error);
+    } catch (e) {
+      console.log('Dashboard fetch error:', e);
     }
   };
 
-  useFocusEffect(
-    useCallback(() => { fetchDashboardData(); }, [])
-  );
+  useFocusEffect(useCallback(() => { fetchDashboardData(); }, []));
+
+  useEffect(() => {
+    if (!loading && !modalVisible) fetchDashboardData();
+  }, [loading, modalVisible]);
 
   const onRefresh = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -114,161 +112,46 @@ export default function HomeScreen() {
     setRefreshing(false);
   }, []);
 
-  // --- SCAN LOGIC ---
-  const handleCheck = async (urlToCheck: string, type: 'Manual' | 'QR Scan' = 'QR Scan') => {
-
-    const cleanedUrl = urlToCheck.trim(); // Remove accidental spaces
-
-    if (!cleanedUrl) {
-       Alert.alert("Empty Input", "Please enter a URL to scan.");
-       return;
-    }
-
-    if (!isValidURL(cleanedUrl)) {
-       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-       Alert.alert("Invalid URL", "That doesn't look like a valid website address.\n\nExample: google.com or https://example.com");
-       return;
-    }
-
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setIsScanning(false);
-    setIsLoading(true);
-    setLoadingUrl(cleanedUrl);
-
-    try {
-      const [_, response] = await Promise.all([
-        new Promise(resolve => setTimeout(resolve, 3000)), 
-        axios.post(API_URL, { url: urlToCheck })
-      ]);
-
-      const { prediction, source, score, forensics } = response.data;
-      
-      if (prediction === 'Safe') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } else {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      }
-
-      if (auth.currentUser) {
-        await addDoc(collection(db, 'users', auth.currentUser.uid, 'scans'), {
-          url: urlToCheck,
-          prediction,
-          score: score || 0,
-          source,
-          type,
-          timestamp: serverTimestamp(),
-        });
-      }
-
-      const newScan = {
-        url: urlToCheck,
-        prediction,
-        score: score || 0,
-        timestamp: { seconds: Date.now() / 1000 }, 
-      };
-
-      setRecentScans(prev => [newScan, ...prev].slice(0, 3)); 
-      setStats(prev => ({
-        ...prev,
-        total: prev.total + 1,
-        safe: prediction === 'Safe' ? prev.safe + 1 : prev.safe,
-        threats: prediction !== 'Safe' ? prev.threats + 1 : prev.threats
-      }));
-
-      setScanResult({ prediction, url: urlToCheck, source, score, forensics });
-      setIsLoading(false);
-      setTimeout(() => setModalVisible(true), 100);
-
-    } catch (error) {
-      console.error("Scan Error:", error);
-      setIsLoading(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert('Connection Failed', 'Could not reach the security server.');
-    } finally {
-      setManualUrl('');
-      setLoadingUrl('');
-    }
-  };
-
-const handleBarCodeScanned = ({ data, bounds }: any) => {
-    if (isLoading || !isScanning) return;
-
-    // 1. SAFEGUARD: Check if bounds exist (some android devices might not send it)
-    if (!bounds) {
-       // Fallback: Just scan it if we can't verify position
-       handleCheck(data, 'QR Scan');
-       return;
-    }
-
-    // 2. GET QR COORDINATES
-    const { origin, size } = bounds;
-    const qrCenterX = origin.x + size.width / 2;
-    const qrCenterY = origin.y + size.height / 2;
-
-    // 3. DEFINE THE "PERFECT ZONE" (The center box)
-    // We calculate the boundaries of the middle square
-    const scanAreaX = (SCREEN_WIDTH - SCAN_AREA_SIZE) / 2;
-    const scanAreaY = (SCREEN_HEIGHT - SCAN_AREA_SIZE) / 2;
-
-    // 4. CHECK 1: IS IT CENTERED?
-    // The QR center must be inside our defined box
-    const isCentered = 
-       qrCenterX > scanAreaX && 
-       qrCenterX < (scanAreaX + SCAN_AREA_SIZE) &&
-       qrCenterY > scanAreaY && 
-       qrCenterY < (scanAreaY + SCAN_AREA_SIZE);
-
-    if (!isCentered) {
-      // Ignore this scan (It's off to the side, likely noise or a second QR)
-      return; 
-    }
-
-    // 5. CHECK 2: IS IT "CLEARLY VISIBLE" (BIG ENOUGH)?
-    // If the QR is tiny (far away), it might be distorted. 
-    // We enforce it must fill at least 40% of the scan frame width.
-    if (size.width < SCAN_AREA_SIZE * 0.4) {
-      // Ignore (Too small/far away)
+  // ── Handlers ──────────────────────────────────────────────────────────────
+  const handleManualScan = () => {
+    const cleaned = manualUrl.trim();
+    if (!cleaned) return;
+    if (!isValidURL(cleaned)) {
+      Alert.alert('Invalid Input', 'Please enter a valid URL.');
       return;
     }
-
-    // 6. CHECK 3: NO DISTORTION (ASPECT RATIO)
-    // A clean QR code is roughly square. If width/height ratio is weird, it's tilted/distorted.
-    const aspectRatio = size.width / size.height;
-    if (aspectRatio < 0.8 || aspectRatio > 1.2) {
-       // Ignore (Too tilted or distorted)
-       return;
-    }
-
-    // --- IF WE PASS ALL CHECKS ---
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    handleCheck(data, 'QR Scan');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    scanUrl(cleaned, 'Manual');
+    setManualUrl('');
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-      <ScrollView 
+      <ScrollView
         contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.accent}/>}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.accent} />
+        }
       >
-        {/* HEADER */}
+        {/* ── Header ── */}
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>WELCOME AGENT,</Text>
             <Text style={styles.username}>{username}</Text>
           </View>
-          
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <View style={styles.statusBadge}>
               <View style={styles.statusDot} />
               <Text style={styles.statusText}>SYSTEM ACTIVE</Text>
             </View>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.newsButton}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push('/news'); 
+                router.push('/news');
               }}
             >
               <Ionicons name="notifications-outline" size={20} color={COLORS.accent} />
@@ -277,57 +160,74 @@ const handleBarCodeScanned = ({ data, bounds }: any) => {
           </View>
         </View>
 
-        {/* --- MAIN ACTION AREA (REDESIGNED) --- */}
+        {/* ── Scanner card ── */}
         <View style={styles.actionCard}>
           <Text style={styles.sectionTitle}>// QUICK SCANNER</Text>
-          
-          {/* BIG QR BUTTON */}
-          <TouchableOpacity 
-            style={styles.bigScanBtn} 
+
+          <TouchableOpacity
+            style={styles.bigScanBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setIsScanning(true);
+              router.replace('/scanner');
             }}
             activeOpacity={0.8}
           >
             <View style={styles.scanIconCircle}>
-                <Ionicons name="qr-code-outline" size={50} color="#000" />
+              <Ionicons name="qr-code-outline" size={50} color="#000" />
             </View>
             <Text style={styles.bigScanText}>SCAN QR CODE</Text>
             <Text style={styles.bigScanSubText}>Detect Scams Instantly</Text>
           </TouchableOpacity>
 
           <View style={styles.divider}>
-             <View style={styles.line} />
-             <Text style={styles.dividerText}>OR CHECK URL</Text>
-             <View style={styles.line} />
+            <View style={styles.line} />
+            <Text style={styles.dividerText}>OR CHECK URL</Text>
+            <View style={styles.line} />
           </View>
 
-          {/* MANUAL INPUT SECTION (SECONDARY) */}
           <View style={styles.manualContainer}>
-             <View style={styles.inputWrapper}>
-                <FontAwesome5 name="link" size={14} color={COLORS.muted} style={{ marginRight: 10 }} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Paste URL to analyze..."
-                  placeholderTextColor={COLORS.muted}
-                  value={manualUrl}
-                  onChangeText={setManualUrl}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-             </View>
-             <TouchableOpacity 
-                style={styles.analyzeBtn} 
-                onPress={() => handleCheck(manualUrl, 'Manual')}
-                disabled={!manualUrl}
-             >
-                <FontAwesome5 name="arrow-right" size={16} color="#000" />
-             </TouchableOpacity>
+            <View style={styles.inputWrapper}>
+              <FontAwesome5 name="link" size={14} color={COLORS.muted} style={{ marginRight: 10 }} />
+              <TextInput
+                style={styles.input}
+                placeholder="Paste URL to analyze..."
+                placeholderTextColor={COLORS.muted}
+                value={manualUrl}
+                onChangeText={setManualUrl}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+            <TouchableOpacity
+              style={[styles.analyzeBtn, (!manualUrl || loading) && { opacity: 0.4 }]}
+              onPress={handleManualScan}
+              disabled={!manualUrl || loading}
+            >
+              <FontAwesome5 name="arrow-right" size={16} color="#000" />
+            </TouchableOpacity>
           </View>
         </View>
 
-        {/* STATS ROW */}
+        {/* ── Wi-Fi Sentinel ── */}
+        <TouchableOpacity
+          style={styles.wifiCard}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push('/wifi');
+          }}
+          activeOpacity={0.8}
+        >
+          <View style={styles.wifiIconBox}>
+            <Ionicons name="wifi" size={24} color={COLORS.accent} />
+          </View>
+          <View style={styles.wifiContent}>
+            <Text style={styles.wifiTitle}>WI-FI SENTINEL</Text>
+            <Text style={styles.wifiSub}>Detect Network Spies & Rogue Routers</Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={24} color={COLORS.muted} />
+        </TouchableOpacity>
+
+        {/* ── Stats ── */}
         <View style={styles.statsRow}>
           <View style={[styles.statCard, { borderColor: COLORS.accent }]}>
             <Text style={[styles.statNumber, { color: COLORS.accent }]}>{stats.safe}</Text>
@@ -339,163 +239,234 @@ const handleBarCodeScanned = ({ data, bounds }: any) => {
           </View>
         </View>
 
-        {/* RECENT LIST */}
+        {/* ── Recent scans ── */}
         <View style={styles.recentSection}>
           <Text style={styles.sectionTitle}>// RECENT INTERCEPTS</Text>
           {recentScans.length === 0 ? (
             <Text style={styles.emptyText}>NO DATA LOGGED.</Text>
           ) : (
-            recentScans.map((scan, index) => (
-              <View key={index} style={styles.recentItem}>
-                <View style={styles.recentInfo}>
-                  <Text style={styles.recentUrl} numberOfLines={1}>{scan.url}</Text>
-                  <Text style={styles.recentDate}>
-                    {scan.timestamp ? new Date(scan.timestamp.seconds * 1000).toLocaleDateString() : 'Just now'}
-                  </Text>
+            recentScans.map((scan, i) => {
+              const isMalicious = scan.prediction === 'MALICIOUS';
+              const color       = isMalicious ? COLORS.danger : COLORS.accent;
+              return (
+                <View key={i} style={[styles.recentItem, { borderLeftColor: color }]}>
+                  <View style={styles.recentInfo}>
+                    <Text style={styles.recentUrl} numberOfLines={1}>{scan.url}</Text>
+                    <Text style={styles.recentDate}>
+                      {formatDate(scan.timestamp)}  {/* ← robust, no more Invalid Date */}
+                    </Text>
+                  </View>
+                  <View style={[
+                    styles.recentBadge,
+                    { backgroundColor: isMalicious ? 'rgba(255,75,75,0.1)' : 'rgba(0,255,157,0.1)' },
+                  ]}>
+                    <Text style={{ color, fontWeight: '900', fontSize: 9, letterSpacing: 1 }}>
+                      {scan.prediction}
+                    </Text>
+                  </View>
                 </View>
-                <View style={[
-                  styles.recentBadge, 
-                  { backgroundColor: scan.prediction === 'Safe' ? 'rgba(0, 255, 157, 0.1)' : 'rgba(255, 75, 75, 0.1)' }
-                ]}>
-                  <Text style={{ 
-                    color: scan.prediction === 'Safe' ? COLORS.accent : COLORS.danger, 
-                    fontWeight: 'bold', 
-                    fontSize: 10 
-                  }}>
-                    {scan.prediction.toUpperCase()}
-                  </Text>
-                </View>
-              </View>
-            ))
+              );
+            })
           )}
         </View>
       </ScrollView>
 
-      {/* CAMERA MODAL */}
-      <Modal visible={isScanning} animationType="slide">
-        <View style={styles.cameraContainer}>
-          <CameraView 
-            style={StyleSheet.absoluteFillObject} 
-            facing={facing} 
-            onBarcodeScanned={handleBarCodeScanned}
-          />
-          <View style={styles.overlay}>
-            <View style={styles.scanFrame} />
-            <Text style={styles.overlayText}>ALIGN QR CODE WITHIN FRAME</Text>
-            <TouchableOpacity onPress={() => setIsScanning(false)} style={styles.closeCameraBtn}>
-              <Ionicons name="close" size={30} color="#fff" />
-            </TouchableOpacity>
+      {/* ── Loader modal ── */}
+      <Modal visible={loading} transparent animationType="fade">
+        <View style={styles.loaderOverlay}>
+          <View style={styles.loaderBox}>
+            <HackerLoader liveLogs={liveLogs} loading={loading} progress={progress} />
           </View>
         </View>
       </Modal>
 
-      {/* LOADER & RESULT MODALS */}
-      <Modal visible={isLoading} transparent={true} animationType="none">
-        <View style={styles.loaderOverlay}>
-            <View style={styles.loaderBox}>
-                <HackerLoader targetUrl={loadingUrl} />
-            </View>
-        </View>
-      </Modal>
-
-      {scanResult && (
-        <ResultModal 
-          isVisible={modalVisible}
-          onClose={() => setModalVisible(false)}
-          prediction={scanResult.prediction}
-          url={scanResult.url}
-          source={scanResult.source}
-          score={scanResult.score}
-          forensics={scanResult.forensics}
-        />
-      )}
+      {/* ── Result modal ── */}
+      <ResultModal isVisible={modalVisible} onClose={closeReport} result={result} />
     </View>
   );
 }
 
+// ── Styles ─────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25, marginTop: 10 },
-  greeting: { color: COLORS.muted, fontSize: 12, letterSpacing: 1 },
-  username: { color: COLORS.text, fontSize: 20, fontWeight: '900', letterSpacing: 1 },
-  
-  statusBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 255, 157, 0.1)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: COLORS.accent },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.accent, marginRight: 6 },
-  statusText: { color: COLORS.accent, fontSize: 10, fontWeight: 'bold' },
+  container:     { flex: 1, backgroundColor: COLORS.bg },
+  scrollContent: { padding: 20, paddingBottom: 50 },
 
-  newsButton: { marginLeft: 10, padding: 8, backgroundColor: COLORS.card, borderRadius: 20, borderWidth: 1, borderColor: COLORS.border },
-  newsDot: { position: 'absolute', top: 5, right: 8, width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.danger },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+    marginTop: 12,
+  },
+  greeting:  { color: COLORS.muted, fontSize: 11, letterSpacing: 1.5 },
+  username:  { color: COLORS.text, fontSize: 20, fontWeight: '900', letterSpacing: 1 },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,255,157,0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  statusDot:  { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.accent, marginRight: 6 },
+  statusText: { color: COLORS.accent, fontSize: 9, fontWeight: '700', letterSpacing: 1 },
+  newsButton: {
+    marginLeft: 10,
+    padding: 8,
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  newsDot: {
+    position: 'absolute',
+    top: 5,
+    right: 8,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.danger,
+  },
 
-  // --- REDESIGNED ACTION AREA ---
-  actionCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: COLORS.border, marginBottom: 25 },
-  sectionTitle: { color: COLORS.muted, fontSize: 12, fontWeight: 'bold', letterSpacing: 2, marginBottom: 20 },
-
-  // BIG SCAN BUTTON
-  bigScanBtn: { 
-    backgroundColor: COLORS.text, 
-    borderRadius: 16, 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    paddingVertical: 25,
-    marginBottom: 20,
-    shadowColor: COLORS.muted,
+  actionCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    color: COLORS.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 2,
+    marginBottom: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  bigScanBtn: {
+    backgroundColor: COLORS.text,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 24,
+    marginBottom: 18,
+    shadowColor: COLORS.accent,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
   },
   scanIconCircle: {
-    width: 70, height: 70, borderRadius: 35, 
-    backgroundColor: 'rgba(0,0,0,0.1)', 
-    justifyContent: 'center', alignItems: 'center', marginBottom: 10 
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  bigScanText: { color: '#000', fontSize: 18, fontWeight: '900', letterSpacing: 1 },
-  bigScanSubText: { color: '#333', fontSize: 12, marginTop: 4, fontWeight: '600' },
+  bigScanText:    { color: '#000', fontSize: 17, fontWeight: '900', letterSpacing: 1 },
+  bigScanSubText: { color: '#555', fontSize: 12, marginTop: 4 },
 
-  // DIVIDER
-  divider: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
-  line: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  divider:     { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
+  line:        { flex: 1, height: 1, backgroundColor: COLORS.border },
   dividerText: { color: COLORS.muted, fontSize: 10, marginHorizontal: 10, letterSpacing: 1 },
 
-  // MANUAL INPUT ROW
   manualContainer: { flexDirection: 'row', alignItems: 'center' },
-  inputWrapper: { 
-    flex: 1, flexDirection: 'row', alignItems: 'center', 
-    backgroundColor: '#121212', borderWidth: 1, borderColor: COLORS.border, 
-    borderRadius: 8, paddingHorizontal: 15, height: 50, marginRight: 10 
+  inputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.bg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    height: 48,
+    marginRight: 10,
   },
-  input: { flex: 1, color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
-  analyzeBtn: { 
-    width: 50, height: 50, backgroundColor: COLORS.text, 
-    borderRadius: 8, justifyContent: 'center', alignItems: 'center' 
+  input: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  analyzeBtn: {
+    width: 48,
+    height: 48,
+    backgroundColor: COLORS.text,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
-  // STATS
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 25 },
-  statCard: { flex: 0.48, backgroundColor: COLORS.card, padding: 15, borderRadius: 12, borderWidth: 1, alignItems: 'center' },
-  statNumber: { fontSize: 28, fontWeight: 'bold' },
-  statLabel: { color: COLORS.muted, fontSize: 10, marginTop: 5, letterSpacing: 0.5 },
+  wifiCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 22,
+  },
+  wifiIconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,255,157,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  wifiContent: { flex: 1 },
+  wifiTitle:   { color: COLORS.text, fontWeight: '900', fontSize: 15, letterSpacing: 1 },
+  wifiSub:     { color: COLORS.muted, fontSize: 11, marginTop: 2 },
 
-  // RECENT LIST
+  statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 24 },
+  statCard: {
+    flex: 0.48,
+    backgroundColor: COLORS.card,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  statNumber: { fontSize: 28, fontWeight: '900' },
+  statLabel:  { color: COLORS.muted, fontSize: 9, marginTop: 5, letterSpacing: 1 },
+
   recentSection: { marginBottom: 20 },
-  recentItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.card, padding: 15, borderRadius: 8, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: COLORS.border },
-  recentInfo: { flex: 1, marginRight: 10 },
-  recentUrl: { color: COLORS.text, fontSize: 14, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', marginBottom: 4 },
-  recentDate: { color: COLORS.muted, fontSize: 10 },
+  recentItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    padding: 14,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  recentInfo:  { flex: 1, marginRight: 10 },
+  recentUrl: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    marginBottom: 4,
+  },
+  recentDate:  { color: COLORS.muted, fontSize: 10 },
   recentBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
-  emptyText: { color: COLORS.muted, textAlign: 'center', marginTop: 10, fontStyle: 'italic' },
-  
-  // MODALS
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg },
-  text: { color: COLORS.text, marginBottom: 20 },
-  btn: { backgroundColor: COLORS.accent, padding: 15, borderRadius: 8 },
-  btnText: { fontWeight: 'bold' },
-  cameraContainer: { flex: 1, backgroundColor: '#000' },
-  overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)' },
-  scanFrame: { width: 250, height: 250, borderWidth: 2, borderColor: COLORS.accent, backgroundColor: 'transparent' },
-  overlayText: { color: '#fff', marginTop: 20, letterSpacing: 1 },
-  closeCameraBtn: { position: 'absolute', top: 50, right: 20, padding: 10 },
-  loaderOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
+  emptyText:   { color: COLORS.muted, textAlign: 'center', marginTop: 10, fontSize: 12, letterSpacing: 1 },
+
+  loaderOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   loaderBox: { width: '90%' },
 });

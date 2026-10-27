@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   View, 
   Text, 
@@ -11,20 +11,12 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { 
-  signInWithEmailAndPassword, 
-  signOut,
-  GoogleAuthProvider, 
-  signInWithCredential 
-} from 'firebase/auth';
-import { auth, db } from '../firebaseConfig'; // Import DB
-import { collection, query, where, getDocs } from 'firebase/firestore'; // Firestore imports
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { auth, db } from '../firebaseConfig'; 
+import { collection, query, where, getDocs } from 'firebase/firestore'; 
 import { StatusBar } from 'expo-status-bar';
-import { MaterialIcons } from '@expo/vector-icons';
-
-// --- GOOGLE AUTH IMPORTS ---
+import { MaterialIcons, Ionicons } from '@expo/vector-icons'; // Added Ionicons
 import * as WebBrowser from 'expo-web-browser';
-import * as Google from 'expo-auth-session/providers/google';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -40,36 +32,10 @@ const COLORS = {
 };
 
 export default function LoginScreen() {
-  const [input, setInput] = useState(''); // Renamed from email to input
+  const [input, setInput] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-
-// --- GOOGLE AUTH SETUP ---
-    const [request, response, promptAsync] = Google.useAuthRequest({
-      // READ FROM ENV
-      webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-      androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-      
-      redirectUri: 'https://auth.expo.io/@sanchit07/sanchit-cyberguard-v2',
-    });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      const { id_token } = response.params;
-      const credential = GoogleAuthProvider.credential(id_token);
-      
-      setLoading(true);
-      signInWithCredential(auth, credential)
-        .then(() => {
-          // Success handled by _layout.tsx
-        })
-        .catch((error) => {
-          Alert.alert('Google Sign-In Failed', error.message);
-          setLoading(false);
-        });
-    }
-  }, [response]);
 
   const handleLogin = async () => {
     if (!input || !password) {
@@ -80,7 +46,7 @@ export default function LoginScreen() {
     let emailToUse = input;
 
     try {
-      // 1. Check if input is a Username (no '@' symbol)
+      // 1. Check if input is a Username
       if (!input.includes('@')) {
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('username', '==', input));
@@ -92,12 +58,11 @@ export default function LoginScreen() {
           return;
         }
 
-        // Get the email associated with this username
         const userData = snapshot.docs[0].data();
         emailToUse = userData.email;
       }
 
-      // 2. Perform Login with Email (either direct input or fetched)
+      // 2. Perform Login
       const userCredential = await signInWithEmailAndPassword(auth, emailToUse, password);
       const user = userCredential.user;
 
@@ -108,7 +73,6 @@ export default function LoginScreen() {
         );
         await signOut(auth);
       } 
-      // Successful login will be auto-detected by _layout.tsx
       
     } catch (error: any) {
       Alert.alert('Login Failed', error.message);
@@ -136,10 +100,10 @@ export default function LoginScreen() {
 
         <TextInput
           style={styles.input}
-          placeholder="ENTER EMAIL OR USERNAME" // Updated Placeholder
+          placeholder="ENTER EMAIL OR USERNAME"
           placeholderTextColor="#666"
           value={input}
-          onChangeText={setInput} // Updates 'input' state
+          onChangeText={setInput}
           autoCapitalize="none"
           autoCorrect={false}
         />
@@ -164,29 +128,29 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={styles.dividerContainer}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>OR ACCESS VIA</Text>
-          <View style={styles.dividerLine} />
-        </View>
-
-        {/* --- GOOGLE BUTTON --- */}
-        <TouchableOpacity 
-          style={styles.googleButton} 
-          onPress={() => promptAsync()}
-          disabled={!request || loading}
-        >
-          <View style={styles.googleIconContainer}>
-             <Text style={styles.googleG}>G</Text>
-          </View>
-          <Text style={styles.googleButtonText}>Sign in with Google</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity onPress={() => router.push('/signup')} style={{marginTop: 20}}>
           <Text style={styles.signupText}>
             NEW USER? <Text style={styles.signupLink}>INITIATE REGISTRATION</Text>
           </Text>
         </TouchableOpacity>
+
+        {/* --- OFFLINE TOOLS SECTION (ADDED) --- */}
+        <View style={styles.offlineContainer}>
+           <View style={styles.dividerContainer}>
+             <View style={styles.dividerLine} />
+             <Text style={styles.dividerText}>OFFLINE TOOLS</Text>
+             <View style={styles.dividerLine} />
+           </View>
+
+           <TouchableOpacity 
+             style={styles.guestWifiBtn}
+             onPress={() => router.push('/wifi')} // Bypass Auth
+           >
+             <Ionicons name="wifi" size={20} color={COLORS.accent} style={{marginRight: 10}} />
+             <Text style={styles.guestBtnText}>SCAN WI-FI SECURITY (NO LOGIN)</Text>
+           </TouchableOpacity>
+        </View>
+
       </View>
     </KeyboardAvoidingView>
   );
@@ -257,10 +221,25 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
   },
+  signupText: {
+    textAlign: 'center',
+    color: '#666',
+    fontSize: 12,
+  },
+  signupLink: {
+    color: COLORS.accent,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+
+  // --- NEW STYLES FOR OFFLINE TOOLS ---
+  offlineContainer: {
+    marginTop: 30,
+  },
   dividerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 20,
+    marginBottom: 15,
   },
   dividerLine: {
     flex: 1,
@@ -273,35 +252,21 @@ const styles = StyleSheet.create({
     marginHorizontal: 10,
     letterSpacing: 1,
   },
-  googleButton: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    height: 55,
+  guestWifiBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(0, 255, 157, 0.05)',
+    paddingVertical: 15,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 157, 0.3)',
+    borderStyle: 'dashed' // Gives it a cool tech look
   },
-  googleIconContainer: {
-    marginRight: 10,
-  },
-  googleG: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: '#333',
-  },
-  googleButtonText: {
-    color: '#333',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  signupText: {
-    textAlign: 'center',
-    color: '#666',
-    fontSize: 12,
-  },
-  signupLink: {
+  guestBtnText: {
     color: COLORS.accent,
+    fontSize: 12,
     fontWeight: 'bold',
-    letterSpacing: 0.5,
-  },
+    letterSpacing: 1,
+  }
 });

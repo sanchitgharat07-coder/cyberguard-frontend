@@ -1,348 +1,541 @@
-import React from "react";
 import {
+  FontAwesome5,
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import React, { useEffect, useRef } from "react";
+import {
+  Animated,
   Modal,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
+  Platform,
   ScrollView,
-  Linking,
-  Alert
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { Ionicons, MaterialIcons } from "@expo/vector-icons";
-
-// Define the shape of the forensics data
-export interface ForensicsData {
-  domain_age_days: number | null;
-  registrar: string;
-  ssl_issuer: string;
-  is_suspicious_age: boolean;
-  is_suspicious_issuer: boolean;
-  abuse_email?: string; // Added for reporting
-}
+import { ScanResult } from "../hooks/useUrlScanner";
 
 interface ResultModalProps {
   isVisible: boolean;
   onClose: () => void;
-  prediction: "Safe" | "Malicious" | "Suspicious";
-  url: string;
-  source?: string;
-  score?: number; // Added score prop
-  forensics?: ForensicsData; 
+  result: ScanResult | null;
 }
 
+const TIER_META: Record<
+  number,
+  { label: string; icon: string; detail: string }
+> = {
+  1: {
+    label: "Tier 1 · ML Filter",
+    icon: "brain",
+    detail:
+      "Lexical machine learning model analysed the URL structure, character patterns, and known phishing indicators in under 5ms. High confidence allowed early resolution.",
+  },
+  2: {
+    label: "Tier 2 · Threat Intel",
+    icon: "database-search",
+    detail:
+      "Domain matched our real-time threat intelligence blacklist sourced from community-reported phishing incidents and auto-reported Tier-3 verdicts.",
+  },
+  3: {
+    label: "Tier 3 · Deep Forensics",
+    icon: "magnify-scan",
+    detail:
+      "Full-page forensic pipeline: SSL certificate validation, WHOIS domain age check, HTML content inspection, brand impersonation detection, and redirect chain analysis.",
+  },
+};
+
+const getSignalColor = (signal: string) => {
+  const s = signal.toLowerCase();
+  if (s.includes("brand") || s.includes("impersonat") || s.includes("mismatch"))
+    return "#ff4b4b";
+  if (s.includes("ssl") || s.includes("certificate") || s.includes("self-sign"))
+    return "#ff8c42";
+  if (s.includes("young") || s.includes("domain age") || s.includes("age"))
+    return "#ffbd2e";
+  if (s.includes("login") || s.includes("credential") || s.includes("form"))
+    return "#ff6b9d";
+  if (s.includes("redirect") || s.includes("obfuscat") || s.includes("hidden"))
+    return "#c792ea";
+  return "#555";
+};
+
+// ── Score bar ──────────────────────────────────────────────────────────────────
+const ScoreBar = ({ score }: { score: number }) => {
+  const pct = Math.min(score / 10, 1);
+  const color = score >= 5 ? "#ff4b4b" : score >= 3 ? "#ffbd2e" : "#00ff9d";
+  return (
+    <View
+      style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
+    >
+      <View
+        style={{
+          flex: 1,
+          height: 5,
+          backgroundColor: "#1a1a1a",
+          borderRadius: 3,
+          overflow: "hidden",
+        }}
+      >
+        <View
+          style={{
+            height: 5,
+            width: `${pct * 100}%`,
+            backgroundColor: color,
+            borderRadius: 3,
+          }}
+        />
+      </View>
+      <Text
+        style={{
+          color,
+          fontWeight: "900",
+          fontSize: 13,
+          fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
+          minWidth: 24,
+        }}
+      >
+        {score}
+      </Text>
+    </View>
+  );
+};
+
+// ── Component ──────────────────────────────────────────────────────────────────
 export const ResultModal = ({
   isVisible,
   onClose,
-  prediction,
-  url,
-  source,
-  score,
-  forensics,
+  result,
 }: ResultModalProps) => {
-  // Dynamic colors/icons based on prediction
-  const getStatusColor = () => {
-    if (prediction === "Safe") return "#5cb85c";
-    if (prediction === "Suspicious") return "#f0ad4e";
-    return "#d9534f";
-  };
+  const slideAnim = useRef(new Animated.Value(600)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  const getStatusIcon = () => {
-    if (prediction === "Safe") return "checkmark-circle";
-    if (prediction === "Suspicious") return "warning";
-    return "alert-circle";
-  };
-
-  // --- REPORTING ACTIONS ---
-  const handleReportToGoogle = () => {
-    if (!url) return;
-    const googleUrl = `https://safebrowsing.google.com/safebrowsing/report_phish/?url=${encodeURIComponent(url)}`;
-    Linking.openURL(googleUrl);
-  };
-
-  const handleReportToRegistrar = () => {
-    const email = forensics?.abuse_email;
-    if (!email) {
-      Alert.alert("No Email Found", "Could not find an abuse contact for this domain.");
-      return;
+  useEffect(() => {
+    if (isVisible) {
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 250,
+          useNativeDriver: true,
+        }),
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          tension: 65,
+          friction: 11,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      Animated.timing(slideAnim, {
+        toValue: 600,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+      fadeAnim.setValue(0);
     }
+  }, [isVisible]);
 
-    const subject = `Abuse Report: Malicious Website Detected - ${url}`;
-    const body = `
-      To ${forensics.registrar || "Domain Registrar"},
-
-      I am reporting a malicious website hosted on your network.
-      
-      URL: ${url}
-      Detection Source: CyberGuard AI
-      Reason: Phishing / Malicious Content Detected
-      
-      Please investigate and suspend this domain immediately.
-    `;
-
-    const mailtoUrl = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    Linking.openURL(mailtoUrl);
+  const handleClose = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onClose();
   };
+
+  if (!result) return null;
+
+  const isMalicious = result.prediction === "MALICIOUS";
+  const themeColor = isMalicious ? "#ff4b4b" : "#00ff9d";
+  const tierMeta = TIER_META[result.tier_resolved] ?? TIER_META[3];
 
   return (
     <Modal
-      animationType="slide"
-      transparent={true}
       visible={isVisible}
-      onRequestClose={onClose}
+      transparent
+      animationType="none"
+      statusBarTranslucent
     >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <ScrollView contentContainerStyle={styles.scrollContent}>
-            {/* 1. Header Section */}
-            <View
-              style={[styles.header, { backgroundColor: getStatusColor() }]}
-            >
-              <Ionicons name={getStatusIcon()} size={60} color="#fff" />
-              <Text style={styles.resultText}>{prediction.toUpperCase()}</Text>
-              
-              {/* Show Score if available */}
-              {score !== undefined && (
-                 <Text style={styles.scoreText}>Trust Score: {score}/10</Text>
-              )}
+      {/* Dimmed backdrop */}
+      <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
+        {/* Sheet — fixed height so ScrollView has bounded space */}
+        <Animated.View
+          style={[styles.sheet, { transform: [{ translateY: slideAnim }] }]}
+        >
+          {/* Top accent border */}
+          <View style={[styles.topBorder, { backgroundColor: themeColor }]} />
 
-              <Text style={styles.sourceText}>
-                Detected by: {source || "Unknown"}
+          {/* ── HEADER ── */}
+          <View style={styles.header}>
+            <View
+              style={[
+                styles.iconCircle,
+                { backgroundColor: `${themeColor}15` },
+              ]}
+            >
+              <Ionicons
+                name={isMalicious ? "warning" : "shield-checkmark"}
+                size={22}
+                color={themeColor}
+              />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={[styles.headerVerdict, { color: themeColor }]}>
+                {isMalicious ? "THREAT DETECTED" : "URL VERIFIED SAFE"}
+              </Text>
+              <Text style={styles.headerSub}>
+                {isMalicious
+                  ? "Do not open — high risk of credential theft."
+                  : "No threats found. Safe to proceed."}
               </Text>
             </View>
+            <TouchableOpacity
+              onPress={handleClose}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="close-circle" size={24} color="#2a2a2a" />
+            </TouchableOpacity>
+          </View>
 
-            {/* 2. URL Section */}
-            <View style={styles.section}>
-              <Text style={styles.label}>Scanned URL:</Text>
-              <Text style={styles.urlText}>{url}</Text>
+          {/* ── SCROLLABLE CONTENT ── */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            {/* Metrics */}
+            <View style={styles.metricsRow}>
+              <View
+                style={[styles.metricCard, { borderColor: `${themeColor}35` }]}
+              >
+                <Text style={[styles.metricValue, { color: themeColor }]}>
+                  {result.confidence.toFixed(1)}
+                  <Text style={styles.metricUnit}>%</Text>
+                </Text>
+                <Text style={styles.metricLabel}>CONFIDENCE</Text>
+              </View>
+              <View style={styles.metricCard}>
+                <Text style={[styles.metricValue, { color: "#666" }]}>
+                  {result.latency_ms < 1000
+                    ? `${Math.round(result.latency_ms)}`
+                    : `${(result.latency_ms / 1000).toFixed(1)}s`}
+                  <Text style={styles.metricUnit}>
+                    {result.latency_ms < 1000 ? "ms" : ""}
+                  </Text>
+                </Text>
+                <Text style={styles.metricLabel}>LATENCY</Text>
+              </View>
+              <View
+                style={[styles.metricCard, { borderColor: `${themeColor}25` }]}
+              >
+                <Text style={[styles.metricValue, { color: themeColor }]}>
+                  T{result.tier_resolved}
+                </Text>
+                <Text style={styles.metricLabel}>RESOLVED BY</Text>
+              </View>
             </View>
 
-            {/* 3. Advanced Forensics Section */}
-            {forensics && (
-              <View style={styles.forensicsContainer}>
-                <Text style={styles.sectionTitle}>🛡️ Domain Intelligence</Text>
+            {/* URL */}
+            <View style={styles.section}>
+              <Text style={styles.sLabel}>// TARGET URL</Text>
+              <View style={styles.urlBox}>
+                <FontAwesome5
+                  name="link"
+                  size={11}
+                  color="#2a2a2a"
+                  style={{ marginTop: 2, marginRight: 8 }}
+                />
+                <Text style={styles.urlText} selectable numberOfLines={4}>
+                  {result.url}
+                </Text>
+              </View>
+            </View>
 
-                {/* Domain Age */}
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Domain Age:</Text>
-                  <Text
-                    style={[
-                      styles.rowValue,
-                      forensics.is_suspicious_age && styles.warningText,
-                    ]}
+            {/* Risk Score — Tier 3 only */}
+            {result.tier_resolved === 3 && (
+              <View style={styles.section}>
+                <Text style={styles.sLabel}>// RISK SCORE</Text>
+                <View style={styles.infoBox}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 12,
+                      marginBottom: 10,
+                    }}
                   >
-                    {forensics.domain_age_days
-                      ? `${forensics.domain_age_days} Days`
-                      : "Unknown"}
-                    {forensics.is_suspicious_age && " (New!)"}
-                  </Text>
-                </View>
-
-                {/* Registrar */}
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Registrar:</Text>
-                  <Text style={styles.rowValue}>
-                    {forensics.registrar || "Hidden"}
-                  </Text>
-                </View>
-
-                {/* SSL Issuer */}
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>SSL Issuer:</Text>
-                  <Text
-                    style={[
-                      styles.rowValue,
-                      forensics.is_suspicious_issuer && styles.warningText,
-                    ]}
-                  >
-                    {forensics.ssl_issuer || "None"}
+                    <Text style={styles.infoLabel}>SCORE</Text>
+                    <ScoreBar score={result.forensics_score} />
+                    <Text style={styles.infoMuted}>/10</Text>
+                  </View>
+                  <Text style={styles.infoCaption}>
+                    Signals accumulate weighted scores. Verdict threshold: 3
+                    points. Your URL scored {result.forensics_score}.
                   </Text>
                 </View>
               </View>
             )}
 
-            {/* 4. REPORT THREAT SECTION (Only for Non-Safe sites) */}
-            {(prediction === 'Malicious' || prediction === 'Suspicious') && (
-              <View style={styles.reportContainer}>
-                <Text style={styles.reportTitle}>⚠️ ACTION REQUIRED</Text>
-                
-                <View style={styles.reportButtonsRow}>
-                  {/* Google Button */}
-                  <TouchableOpacity 
-                    onPress={handleReportToGoogle}
-                    style={[styles.reportButton, { borderColor: '#d9534f' }]}
+            {/* Detection Method */}
+            <View style={styles.section}>
+              <Text style={styles.sLabel}>// HOW WE DETECTED IT</Text>
+              <View
+                style={[styles.infoBox, { borderColor: `${themeColor}20` }]}
+              >
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <MaterialCommunityIcons
+                    name={tierMeta.icon as any}
+                    size={18}
+                    color={themeColor}
+                  />
+                  <Text style={[styles.detectionTitle, { color: themeColor }]}>
+                    {tierMeta.label}
+                  </Text>
+                </View>
+                <Text style={styles.infoCaption}>{tierMeta.detail}</Text>
+              </View>
+            </View>
+
+            {/* Signals — Tier 3 only */}
+            {result.tier_resolved === 3 && (
+              <View style={styles.section}>
+                <Text style={styles.sLabel}>
+                  // {isMalicious ? "THREAT SIGNALS" : "FORENSIC SIGNALS"}
+                  {"  "}
+                  <Text style={{ color: "#2a2a2a" }}>
+                    ({result.signals.length})
+                  </Text>
+                </Text>
+
+                {result.signals.length === 0 ? (
+                  <View
+                    style={[
+                      styles.infoBox,
+                      { flexDirection: "row", alignItems: "center", gap: 10 },
+                    ]}
                   >
-                    <MaterialIcons name="security" size={24} color="#d9534f" />
-                    <Text style={[styles.reportButtonText, { color: '#d9534f' }]}>
-                      Report to Google
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={16}
+                      color="#00ff9d"
+                    />
+                    <Text style={{ color: "#00ff9d", fontSize: 12 }}>
+                      No suspicious signals detected
                     </Text>
-                  </TouchableOpacity>
-
-                  {/* Registrar Button (Only if email exists) */}
-                  {forensics?.abuse_email && (
-                    <TouchableOpacity 
-                      onPress={handleReportToRegistrar}
-                      style={[styles.reportButton, { borderColor: '#f0ad4e' }]}
-                    >
-                      <MaterialIcons name="email" size={24} color="#f0ad4e" />
-                      <Text style={[styles.reportButtonText, { color: '#f0ad4e' }]}>
-                        Email Registrar
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+                  </View>
+                ) : (
+                  <View style={styles.signalsBox}>
+                    {result.signals.map((sig, i) => {
+                      const c = getSignalColor(sig);
+                      return (
+                        <View key={i} style={styles.signalRow}>
+                          <View
+                            style={[styles.signalDot, { backgroundColor: c }]}
+                          />
+                          <Text style={[styles.signalText, { color: c }]}>
+                            {sig}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
               </View>
             )}
 
-            {/* 5. Close Button */}
-            <TouchableOpacity
-              style={[
-                styles.closeButton,
-                { backgroundColor: getStatusColor() },
-              ]}
-              onPress={onClose}
-            >
-              <Text style={styles.closeButtonText}>Close Report</Text>
-            </TouchableOpacity>
+            {/* Reason */}
+            <View style={styles.reasonRow}>
+              <Ionicons
+                name="information-circle-outline"
+                size={13}
+                color="#ede8e8"
+              />
+              <Text style={styles.reasonText}> {result.reason}</Text>
+            </View>
           </ScrollView>
-        </View>
-      </View>
+
+          {/* ── CTA ── */}
+          <TouchableOpacity
+            style={[styles.cta, { backgroundColor: themeColor }]}
+            onPress={handleClose}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.ctaText}>ACKNOWLEDGE REPORT</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </Animated.View>
     </Modal>
   );
 };
 
+// ── Styles ─────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  modalOverlay: {
+  overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 20,
+    backgroundColor: "rgba(0,0,0,0.88)",
+    justifyContent: "flex-end", // sheet sticks to bottom
   },
-  modalContent: {
-    backgroundColor: "#fff",
-    borderRadius: 20,
+  sheet: {
+    // ⚠️ KEY FIX: explicit height instead of maxHeight so ScrollView has
+    // a bounded container and doesn't collapse to zero.
+    height: "88%",
+    backgroundColor: "#0a0a0a",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     overflow: "hidden",
-    maxHeight: "85%",
   },
-  scrollContent: {
-    paddingBottom: 20,
-  },
+  topBorder: { height: 2, width: "100%" },
+
+  // Header
   header: {
+    flexDirection: "row",
     alignItems: "center",
-    padding: 30,
-  },
-  resultText: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#fff",
-    marginTop: 10,
-    letterSpacing: 1,
-  },
-  scoreText: {
-    fontSize: 16,
-    color: "#fff",
-    fontWeight: "bold",
-    marginTop: 5,
-    backgroundColor: 'rgba(0,0,0,0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  sourceText: {
-    color: "rgba(255,255,255,0.9)",
-    fontSize: 14,
-    marginTop: 5,
-  },
-  section: {
-    padding: 20,
+    padding: 18,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: "#111",
   },
-  label: {
+  iconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  headerVerdict: {
     fontSize: 14,
-    color: "gray",
-    marginBottom: 5,
+    fontWeight: "900",
+    letterSpacing: 2,
+    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
+  },
+  headerSub: { color: "#f5efef", fontSize: 11, marginTop: 3 },
+
+  // Scroll — flex:1 now works because parent `sheet` has explicit height
+  scroll: { flex: 1 },
+  scrollContent: { padding: 18, paddingBottom: 30 },
+
+  // Metrics
+  metricsRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
+  metricCard: {
+    flex: 1,
+    backgroundColor: "#111",
+    borderWidth: 1,
+    borderColor: "#1a1a1a",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  metricValue: {
+    fontSize: 19,
+    fontWeight: "900",
+    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
+  },
+  metricUnit: { fontSize: 11, fontWeight: "400" },
+  metricLabel: {
+    color: "#fbf8f8",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 1.5,
+    marginTop: 5,
+  },
+
+  // Sections
+  section: { marginBottom: 20 },
+  sLabel: {
+    color: "#f9f8f8",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 2,
+    marginBottom: 10,
+    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
+  },
+
+  // URL
+  urlBox: {
+    backgroundColor: "#0e0e0e",
+    borderWidth: 1,
+    borderColor: "#1a1a1a",
+    borderRadius: 10,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "flex-start",
   },
   urlText: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#333",
-  },
-  forensicsContainer: {
-    padding: 20,
-    backgroundColor: "#f8f9fa",
-    margin: 15,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#e9ecef",
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    marginBottom: 15,
-    color: "#2c3e50",
-  },
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  rowLabel: {
-    fontSize: 14,
-    color: "#666",
-    fontWeight: "600",
-  },
-  rowValue: {
-    fontSize: 14,
-    color: '#333',
-    maxWidth: '60%',
-    textAlign: 'right',
-  },
-  warningText: {
-    color: "#d9534f",
-    fontWeight: "bold",
-  },
-  // Report Styles
-  reportContainer: {
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  reportTitle: {
+    color: "#f8f8f8",
     fontSize: 12,
-    fontWeight: 'bold',
-    color: '#666',
-    letterSpacing: 1,
-    marginBottom: 15,
-    textAlign: 'center',
-  },
-  reportButtonsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  reportButton: {
+    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
+    lineHeight: 19,
     flex: 1,
-    alignItems: 'center',
-    padding: 12,
+  },
+
+  // Generic info box
+  infoBox: {
+    backgroundColor: "#0e0e0e",
     borderWidth: 1,
-    borderRadius: 8,
-    marginHorizontal: 5,
-    backgroundColor: '#fff',
+    borderColor: "#1a1a1a",
+    borderRadius: 12,
+    padding: 14,
   },
-  reportButtonText: {
+  infoLabel: {
+    color: "#fbf9f9",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+  infoMuted: { color: "#f1eeee", fontSize: 11 },
+  infoCaption: { color: "#f1e6e6", fontSize: 11, lineHeight: 18 },
+
+  detectionTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    flex: 1,
+  },
+
+  // Signals
+  signalsBox: {
+    backgroundColor: "#0e0e0e",
+    borderWidth: 1,
+    borderColor: "#1a1a1a",
+    borderRadius: 12,
+    padding: 14,
+    gap: 10,
+  },
+  signalRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  signalDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 6,
+    flexShrink: 0,
+  },
+  signalText: {
     fontSize: 12,
-    fontWeight: 'bold',
-    marginTop: 5,
+    flex: 1,
+    lineHeight: 20,
+    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
   },
-  closeButton: {
-    margin: 20,
-    padding: 15,
-    borderRadius: 10,
+
+  // Reason
+  reasonRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  reasonText: { color: "#e8e2e2", fontSize: 11, flex: 1 },
+
+  // CTA
+  cta: {
+    padding: 18,
     alignItems: "center",
+    marginBottom: Platform.OS === "ios" ? 30 : 0,
   },
-  closeButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "bold",
+  ctaText: {
+    color: "#212020",
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 3,
   },
 });
