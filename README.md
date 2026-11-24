@@ -1,6 +1,6 @@
 # CyberGuard AI — Mobile Frontend
 
-**CyberGuard AI: Deepfake QR Code Fraud Detector (v2 Stable)** is a cross-platform mobile application built with React Native and Expo. It is designed to work with the [CyberGuard AI backend](https://github.com/sanchitgharat07-coder/cyberguard-backend) for QR-code and URL threat analysis.
+**CyberGuard AI(v2 Stable)** is a cross-platform mobile application built with React Native and Expo. It is designed to work with the [CyberGuard AI backend](https://github.com/sanchitgharat07-coder/cyberguard-backend) for QR-code and URL threat analysis.
 
 The frontend repository contains the app screens, reusable UI components, hooks, assets, and client-side utilities.
 
